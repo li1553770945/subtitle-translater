@@ -1,0 +1,195 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: yarn build
+
+      - name: Build Electron app for Windows
+        run: yarn electron:build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: List build outputs
+        run: |
+          echo "=== Build outputs ==="
+          dir dist /s /b || ls -R dist || find dist -type f
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: yarn build
+
+      - name: Build Electron app for macOS
+        run: yarn electron:build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: List build outputs
+        run: |
+          echo "=== Build outputs ==="
+          find dist -type f || ls -R dist
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: yarn build
+
+      - name: Build Electron app for Linux
+        run: yarn electron:build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: List build outputs
+        run: |
+          echo "=== Build outputs ==="
+          find dist -type f || ls -R dist
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    # 只在 main 分支推送时发布 release
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: artifacts/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+          path: artifacts/macos
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: artifacts/linux
+
+      - name: Get version from package.json
+        id: package-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: List artifacts
+        run: |
+          echo "=== Windows artifacts ==="
+          find artifacts/windows -type f || echo "No Windows artifacts found"
+          echo ""
+          echo "=== macOS artifacts ==="
+          find artifacts/macos -type f || echo "No macOS artifacts found"
+          echo ""
+          echo "=== Linux artifacts ==="
+          find artifacts/linux -type f || echo "No Linux artifacts found"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.package-version.outputs.version }}
+          name: Release v${{ steps.package-version.outputs.version }}
+          body: |
+            ## 字幕翻译工具 v${{ steps.package-version.outputs.version }}
+            
+            ### 📦 下载
+            
+            - **Windows**: 下载 `windows` 目录中的安装包（.exe 或 .nsis.exe）
+            - **macOS**: 下载 `macos` 目录中的 DMG 文件
+            - **Linux**: 下载 `linux` 目录中的 AppImage 文件
+            
+            ### 📋 构建信息
+            
+            - **构建时间**: ${{ github.event.head_commit.timestamp }}
+            - **提交**: ${{ github.sha }}
+            - **分支**: ${{ github.ref_name }}
+            - **工作流**: ${{ github.workflow }}
+            
+            ### 🔄 变更
+            
+            ${{ github.event.head_commit.message }}
+          files: |
+            artifacts/windows/**
+            artifacts/macos/**
+            artifacts/linux/**
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
