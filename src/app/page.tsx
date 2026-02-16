@@ -1,17 +1,80 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import SettingsModal from '@/components/SettingsModal';
+import {
+  TranslationProvider,
+  PROVIDER_MODELS,
+  AppSettings,
+  DEFAULT_SETTINGS,
+  TranslationMode,
+} from '@/types/settings';
+import { loadSettings } from '@/utils/settings';
+
+const PROVIDER_LABELS: Record<TranslationProvider, string> = {
+  deepseek: 'DeepSeek',
+  openai: 'OpenAI',
+  google: 'Google',
+};
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [sourceLang, setSourceLang] = useState('en');
   const [targetLang, setTargetLang] = useState('zh');
   const [outputFormat, setOutputFormat] = useState('srt');
+  const [translationMode, setTranslationMode] = useState<TranslationMode>('single');
+  const [multiLineBatchSize, setMultiLineBatchSize] = useState(3);
+  const [contextLines, setContextLines] = useState(0);
+  const [provider, setProvider] = useState<TranslationProvider>('deepseek');
+  const [model, setModel] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ content: string; filename: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+
+  // 加载设置
+  useEffect(() => {
+    loadSettings().then((settings) => {
+      setAppSettings(settings);
+    });
+
+    // 监听设置更新事件
+    const handleSettingsUpdated = () => {
+      loadSettings().then((settings) => {
+        setAppSettings(settings);
+      });
+    };
+    window.addEventListener('settingsUpdated', handleSettingsUpdated);
+    return () => {
+      window.removeEventListener('settingsUpdated', handleSettingsUpdated);
+    };
+  }, []);
+
+  // 初始化：选择第一个已配置的供应商和模型
+  useEffect(() => {
+    const enabledServices = (['deepseek', 'openai', 'google'] as TranslationProvider[]).filter(
+      (p) => appSettings.services[p].enabled && appSettings.services[p].apiKey
+    );
+    
+    if (enabledServices.length > 0) {
+      const firstEnabled = enabledServices[0];
+      setProvider(firstEnabled);
+      setModel(PROVIDER_MODELS[firstEnabled][0] || '');
+    } else {
+      // 如果没有已配置的服务，使用默认值
+      setModel(PROVIDER_MODELS[provider][0] || '');
+    }
+  }, [appSettings]);
+
+  // 当供应商改变时，更新模型选择
+  useEffect(() => {
+    const availableModels = PROVIDER_MODELS[provider];
+    if (availableModels.length > 0) {
+      // 总是设置为第一个可用模型（供应商改变时）
+      setModel(availableModels[0]);
+    }
+  }, [provider]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -27,16 +90,41 @@ export default function Home() {
       return;
     }
 
+    if (!model) {
+      setError('请选择翻译模型');
+      return;
+    }
+
+    // 检查选中的供应商是否已配置
+    const serviceConfig = appSettings.services[provider];
+    if (!serviceConfig.enabled || !serviceConfig.apiKey) {
+      setError(`请先在设置中配置 ${PROVIDER_LABELS[provider]} 的 API Key`);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
+      const serviceConfig = appSettings.services[provider];
+      
       const formData = new FormData();
       formData.append('file', file);
       formData.append('sourceLang', sourceLang);
       formData.append('targetLang', targetLang);
       formData.append('outputFormat', outputFormat);
+      formData.append('translationMode', translationMode);
+      formData.append('multiLineBatchSize', String(multiLineBatchSize));
+      formData.append('contextLines', String(contextLines));
+      formData.append('provider', provider);
+      formData.append('model', model);
+      formData.append('apiKey', serviceConfig.apiKey);
+      if (serviceConfig.baseUrl) {
+        formData.append('baseUrl', serviceConfig.baseUrl);
+      }
+      formData.append('prompt', serviceConfig.prompt);
+      formData.append('contextPrompt', serviceConfig.contextPrompt ?? '');
 
       const response = await fetch('/api/translate', {
         method: 'POST',
@@ -134,6 +222,59 @@ export default function Home() {
             )}
           </div>
 
+          {/* 翻译服务选择 */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                翻译供应商
+              </label>
+              <select
+                value={provider}
+                onChange={(e) => {
+                  const newProvider = e.target.value as TranslationProvider;
+                  setProvider(newProvider);
+                  // 更新模型为第一个可用模型
+                  const availableModels = PROVIDER_MODELS[newProvider];
+                  if (availableModels.length > 0) {
+                    setModel(availableModels[0]);
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                  focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                  dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
+              >
+                {(['deepseek', 'openai', 'google'] as TranslationProvider[]).map((p) => {
+                  const serviceConfig = appSettings.services[p];
+                  const isConfigured = serviceConfig.enabled && serviceConfig.apiKey;
+                  return (
+                    <option key={p} value={p}>
+                      {PROVIDER_LABELS[p]} {isConfigured ? '' : '(未配置)'}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                模型
+              </label>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                  focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                  dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
+                disabled={!PROVIDER_MODELS[provider] || PROVIDER_MODELS[provider].length === 0}
+              >
+                {PROVIDER_MODELS[provider]?.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           {/* 语言选择 */}
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -176,6 +317,91 @@ export default function Home() {
                 <option value="es">西班牙语</option>
               </select>
             </div>
+          </div>
+
+          {/* 翻译模式：单行/多行 */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                翻译模式
+              </label>
+              <div className="flex gap-6">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="translationMode"
+                    value="single"
+                    checked={translationMode === 'single'}
+                    onChange={() => setTranslationMode('single')}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-gray-700 dark:text-gray-300">单行</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">逐句翻译</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="translationMode"
+                    value="multi"
+                    checked={translationMode === 'multi'}
+                    onChange={() => setTranslationMode('multi')}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-gray-700 dark:text-gray-300">多行</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">合并翻译</span>
+                </label>
+              </div>
+            </div>
+
+            {translationMode === 'multi' && (
+              <div>
+                <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                  每次合并条数
+                  <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                    (2–10 条)
+                  </span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={2}
+                    max={10}
+                    value={multiLineBatchSize}
+                    onChange={(e) => setMultiLineBatchSize(parseInt(e.target.value, 10))}
+                    className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                      bg-gray-200 dark:bg-gray-600 accent-blue-600"
+                  />
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-8">
+                    {multiLineBatchSize}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {translationMode === 'single' && (
+              <div>
+                <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                  翻译上下文
+                  <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                    (前后各 N 句作参考，不翻译)
+                  </span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={3}
+                    value={contextLines}
+                    onChange={(e) => setContextLines(parseInt(e.target.value, 10))}
+                    className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                      bg-gray-200 dark:bg-gray-600 accent-blue-600"
+                  />
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-8">
+                    {contextLines}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 输出格式 */}

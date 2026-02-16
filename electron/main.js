@@ -1,5 +1,6 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -129,6 +130,48 @@ function createWindow() {
     return { action: 'deny' };
   });
 }
+
+// 获取设置文件路径（保存在程序所在目录）
+function getSettingsPath() {
+  // 使用应用路径，开发环境是项目根目录，生产环境是应用所在目录
+  const appPath = app.getAppPath();
+  return path.join(appPath, 'settings.json');
+}
+
+// IPC 处理器：读取设置
+ipcMain.handle('settings:read', async () => {
+  try {
+    const settingsPath = getSettingsPath();
+    if (fs.existsSync(settingsPath)) {
+      const data = fs.readFileSync(settingsPath, 'utf-8');
+      return JSON.parse(data);
+    }
+    return null;
+  } catch (error) {
+    console.error('读取设置失败:', error);
+    return null;
+  }
+});
+
+// IPC 处理器：写入设置
+ipcMain.handle('settings:write', async (event, settings) => {
+  try {
+    const settingsPath = getSettingsPath();
+    const appPath = app.getAppPath();
+    
+    // 确保应用目录存在
+    if (!fs.existsSync(appPath)) {
+      fs.mkdirSync(appPath, { recursive: true });
+    }
+    
+    // 写入设置文件
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    return { success: true };
+  } catch (error) {
+    console.error('保存设置失败:', error);
+    return { success: false, error: error.message };
+  }
+});
 
 // 应用准备就绪
 app.whenReady().then(() => {

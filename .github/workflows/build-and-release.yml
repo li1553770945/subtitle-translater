@@ -33,7 +33,7 @@ jobs:
       - name: List build outputs
         run: |
           echo "=== Build outputs ==="
-          dir dist /s /b || ls -R dist || find dist -type f
+          Get-ChildItem -Path dist -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4

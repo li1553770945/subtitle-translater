@@ -21,19 +21,12 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   useEffect(() => {
     if (isOpen) {
-      const loaded = loadSettings();
-      setSettings(loaded);
-      setHasChanges(false);
+      loadSettings().then((loaded) => {
+        setSettings(loaded);
+        setHasChanges(false);
+      });
     }
   }, [isOpen]);
-
-  const handleProviderChange = (provider: TranslationProvider) => {
-    setSettings((prev) => ({
-      ...prev,
-      currentProvider: provider,
-    }));
-    setHasChanges(true);
-  };
 
   const handleServiceConfigChange = (
     provider: TranslationProvider,
@@ -53,12 +46,17 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setHasChanges(true);
   };
 
-  const handleSave = () => {
-    saveSettings(settings);
-    setHasChanges(false);
-    onClose();
-    // 触发自定义事件，通知其他组件设置已更新
-    window.dispatchEvent(new CustomEvent('settingsUpdated'));
+  const handleSave = async () => {
+    try {
+      await saveSettings(settings);
+      setHasChanges(false);
+      onClose();
+      // 触发自定义事件，通知其他组件设置已更新
+      window.dispatchEvent(new CustomEvent('settingsUpdated'));
+    } catch (error) {
+      console.error('保存设置失败:', error);
+      alert('保存设置失败，请重试');
+    }
   };
 
   const handleCancel = () => {
@@ -95,51 +93,19 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
         {/* 内容区域 */}
         <div className="flex-1 overflow-y-auto p-6">
-          {/* 选择当前翻译服务 */}
-          <div className="mb-8">
-            <label className="block text-sm font-medium mb-3 text-gray-700 dark:text-gray-300">
-              当前使用的翻译服务
-            </label>
-            <div className="flex gap-3">
-              {(['deepseek', 'openai', 'google'] as TranslationProvider[]).map((provider) => (
-                <label
-                  key={provider}
-                  className={`flex-1 p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                    settings.currentProvider === provider
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                      : 'border-gray-300 dark:border-gray-600 hover:border-gray-400'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="provider"
-                    value={provider}
-                    checked={settings.currentProvider === provider}
-                    onChange={() => handleProviderChange(provider)}
-                    className="mr-2"
-                  />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">
-                    {PROVIDER_LABELS[provider]}
-                  </span>
-                </label>
-              ))}
-            </div>
+          <div className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+            <p>在此配置各翻译服务的 API Key 和 Base URL。翻译时可在翻译界面选择使用的供应商和模型。</p>
           </div>
 
           {/* 各服务配置 */}
           <div className="space-y-6">
             {(['deepseek', 'openai', 'google'] as TranslationProvider[]).map((provider) => {
               const config = settings.services[provider];
-              const isActive = settings.currentProvider === provider;
 
               return (
                 <div
                   key={provider}
-                  className={`border rounded-lg p-5 ${
-                    isActive
-                      ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/10'
-                      : 'border-gray-200 dark:border-gray-700'
-                  }`}
+                  className="border border-gray-200 dark:border-gray-700 rounded-lg p-5"
                 >
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
@@ -200,7 +166,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                         翻译 Prompt
                         <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
-                          (使用 {'{content}'}、{'{sourceLang}'}、{'{targetLang}'} 作为占位符)
+                          (使用 {'{content}'}、{'{sourceLang}'}、{'{targetLang}'}、{'{context_prompt}'} 作为占位符)
                         </span>
                       </label>
                       <textarea
@@ -209,7 +175,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           handleServiceConfigChange(provider, 'prompt', e.target.value)
                         }
                         rows={4}
-                        placeholder="输入翻译提示词，使用 {content}、{sourceLang}、{targetLang} 作为占位符"
+                        placeholder="输入翻译提示词，使用 {content}、{sourceLang}、{targetLang}、{context_prompt} 作为占位符"
                         className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
                           focus:outline-none focus:ring-blue-500 focus:border-blue-500
                           dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300
@@ -221,7 +187,33 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           <li>{'{content}'} - 会被替换为实际要翻译的内容</li>
                           <li>{'{sourceLang}'} - 会被替换为源语言代码（如：en, zh）</li>
                           <li>{'{targetLang}'} - 会被替换为目标语言代码（如：zh, en）</li>
+                          <li>{'{context_prompt}'} - 启用翻译上下文时，插入下方「上下文 Prompt」解析后的内容；无上下文时为空的</li>
                         </ul>
+                      </div>
+                    </div>
+
+                    {/* Context Prompt */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                        上下文 Prompt
+                        <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                          (单行模式 + 翻译上下文 &gt; 0 时生效，使用 {'{context}'} 占位符)
+                        </span>
+                      </label>
+                      <textarea
+                        value={config.contextPrompt ?? ''}
+                        onChange={(e) =>
+                          handleServiceConfigChange(provider, 'contextPrompt', e.target.value)
+                        }
+                        rows={4}
+                        placeholder="输入上下文提示词，使用 {context} 作为占位符"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                          focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                          dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300
+                          font-mono text-sm"
+                      />
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                        <p>上下文会包含：上文、【目标句】、下文。{'{context}'} 会被替换为该内容，解析结果插入主 Prompt 的 {'{context_prompt}'} 位置。</p>
                       </div>
                     </div>
                   </div>
