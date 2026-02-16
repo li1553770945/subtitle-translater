@@ -23,12 +23,18 @@ export async function POST(request: NextRequest) {
     const translationMode: TranslationMode = modeRaw === 'multi' ? 'multi' : 'single';
     const multiLineBatchSize = Math.min(10, Math.max(2, parseInt(String(formData.get('multiLineBatchSize') || '3'), 10) || 3));
     const contextLines = Math.min(3, Math.max(0, parseInt(String(formData.get('contextLines') || '0'), 10) || 0));
+    const enableContext = formData.get('enableContext') === 'true';
+    const enableCoherence = formData.get('enableCoherence') === 'true';
+    const parallelCountRaw = formData.get('parallelCount') as string;
+    const parallelCount = parallelCountRaw ? Math.min(10, Math.max(2, parseInt(parallelCountRaw, 10) || 1)) : undefined;
 
     // 从请求中获取服务配置（前端会传递这些信息）
     const apiKey = formData.get('apiKey') as string;
     const baseUrl = formData.get('baseUrl') as string || undefined;
     const prompt = formData.get('prompt') as string;
     const contextPrompt = (formData.get('contextPrompt') as string) || undefined;
+    const coherencePrompt = (formData.get('coherencePrompt') as string) || undefined;
+    const customPrompt = (formData.get('customPrompt') as string) || undefined;
 
     if (!file) {
       return NextResponse.json(
@@ -63,6 +69,8 @@ export async function POST(request: NextRequest) {
       baseUrl,
       prompt: prompt || DEFAULT_PROMPT,
       contextPrompt,
+      coherencePrompt,
+      customPrompt,
     });
 
     // 创建服务实例
@@ -123,6 +131,9 @@ export async function POST(request: NextRequest) {
             mode: translationMode,
             multiLineBatchSize,
             contextLines,
+            enableContext,
+            enableCoherence,
+            parallelCount,
             onProgress: sendProgress,
             abortSignal: abortSignalWrapper,
           };

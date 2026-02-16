@@ -12,6 +12,10 @@ export interface LLMTranslatorConfig {
   prompt: string;
   /** 上下文 Prompt，使用 {context} 占位符。有上下文时会解析后插入主 prompt 的 {context_prompt} */
   contextPrompt?: string;
+  /** 连贯性 Prompt，使用 {context} 占位符。启用连贯模式时会解析后插入主 prompt 的 {coherence_prompt} */
+  coherencePrompt?: string;
+  /** 独立prompt（单次翻译专用），会替换主 prompt 中的 {custom_prompt} 占位符 */
+  customPrompt?: string;
 }
 
 /**
@@ -33,18 +37,35 @@ export class LLMTranslator implements Translator {
     text: string,
     sourceLang: string,
     targetLang: string,
-    options?: { context?: string }
+    options?: { context?: string; enableContext?: boolean; enableCoherence?: boolean }
   ): Promise<string> {
+    // 处理独立prompt（customPrompt），如果设置了则使用，否则替换为空字符串
+    const customPromptResolved = this.config.customPrompt?.trim() || '';
+
+    // 只有当enableContext为true时才使用contextPrompt
     let contextPromptResolved = '';
-    if (options?.context && this.config.contextPrompt) {
+    if (options?.enableContext && options?.context && this.config.contextPrompt) {
       contextPromptResolved = this.config.contextPrompt.replace('{context}', options.context);
     }
 
-    const prompt = this.config.prompt
+    // 只有当enableCoherence为true时才使用coherencePrompt
+    let coherencePromptResolved = '';
+    if (options?.enableCoherence && options?.context && this.config.coherencePrompt) {
+      coherencePromptResolved = this.config.coherencePrompt.replace('{context}', options.context);
+    }
+
+    let prompt = this.config.prompt
+      .replace(/\{custom_prompt\}/g, customPromptResolved)
       .replace(/\{context_prompt\}/g, contextPromptResolved)
+      .replace(/\{coherence_prompt\}/g, coherencePromptResolved)
       .replace(/\{content\}/g, text)
       .replace(/\{sourceLang\}/g, sourceLang)
       .replace(/\{targetLang\}/g, targetLang);
+
+    // 如果启用了连贯模式，但prompt中没有{coherence_prompt}占位符，且coherencePromptResolved不为空，则自动追加
+    if (options?.enableCoherence && coherencePromptResolved && !this.config.prompt.includes('{coherence_prompt}')) {
+      prompt = prompt + '\n\n' + coherencePromptResolved;
+    }
 
     try {
       const response = await this.callAPI(prompt);

@@ -26,6 +26,9 @@ export default function Home() {
   const [translationMode, setTranslationMode] = useState<TranslationMode>('single');
   const [multiLineBatchSize, setMultiLineBatchSize] = useState(3);
   const [contextLines, setContextLines] = useState(0);
+  const [enableContext, setEnableContext] = useState(false);
+  const [enableCoherence, setEnableCoherence] = useState(false);
+  const [parallelCount, setParallelCount] = useState<number | undefined>(undefined);
   const [provider, setProvider] = useState<TranslationProvider>('deepseek');
   const [model, setModel] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -42,6 +45,7 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [isCancelled, setIsCancelled] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
 
@@ -105,7 +109,17 @@ export default function Home() {
       setFile(e.target.files[0]);
       setResult(null);
       setError(null);
+      // 切换文件时不清空独立prompt，允许用户保留设置
     }
+  };
+
+  const handleInsertCustomPrompt = (content: string) => {
+    setCustomPrompt((prev) => {
+      if (prev.trim()) {
+        return prev + '\n\n' + content;
+      }
+      return content;
+    });
   };
 
   const handleTranslate = async () => {
@@ -153,6 +167,11 @@ export default function Home() {
       formData.append('translationMode', translationMode);
       formData.append('multiLineBatchSize', String(multiLineBatchSize));
       formData.append('contextLines', String(contextLines));
+      formData.append('enableContext', String(enableContext));
+      formData.append('enableCoherence', String(enableCoherence));
+      if (parallelCount !== undefined) {
+        formData.append('parallelCount', String(parallelCount));
+      }
       formData.append('provider', provider);
       formData.append('model', model);
       formData.append('apiKey', serviceConfig.apiKey);
@@ -161,6 +180,8 @@ export default function Home() {
       }
       formData.append('prompt', serviceConfig.prompt);
       formData.append('contextPrompt', serviceConfig.contextPrompt ?? '');
+      formData.append('coherencePrompt', serviceConfig.coherencePrompt ?? '');
+      formData.append('customPrompt', customPrompt.trim());
 
       const response = await fetch('/api/translate', {
         method: 'POST',
@@ -598,28 +619,136 @@ export default function Home() {
             )}
 
             {translationMode === 'single' && (
-              <div>
-                <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-                  翻译上下文
-                  <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
-                    (前后各 N 句作参考，不翻译)
-                  </span>
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={0}
-                    max={3}
-                    value={contextLines}
-                    onChange={(e) => setContextLines(parseInt(e.target.value, 10))}
-                    className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
-                      bg-gray-200 dark:bg-gray-600 accent-blue-600"
-                  />
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-8">
-                    {contextLines}
-                  </span>
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    并行翻译数量
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                      (2–10，留空则串行翻译)
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={2}
+                      max={10}
+                      value={parallelCount || 1}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value, 10);
+                        setParallelCount(value >= 2 ? value : undefined);
+                      }}
+                      className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                        bg-gray-200 dark:bg-gray-600 accent-blue-600"
+                    />
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-12">
+                      {parallelCount || '串行'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    并行翻译可加快速度，但结果可能乱序到达。前端会自动按时间顺序排列。
+                  </p>
                 </div>
-              </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    翻译上下文
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                      (前后各 N 句作参考)
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={0}
+                      max={3}
+                      value={contextLines}
+                      onChange={(e) => setContextLines(parseInt(e.target.value, 10))}
+                      className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                        bg-gray-200 dark:bg-gray-600 accent-blue-600"
+                    />
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-8">
+                      {contextLines}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 翻译上下文开关 */}
+                {contextLines > 0 && (
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900/50">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={enableContext}
+                        onChange={(e) => {
+                          setEnableContext(e.target.checked);
+                        }}
+                        className="mt-1 w-4 h-4"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            使用翻译上下文
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">
+                          将上下文通过 contextPrompt 插入，帮助AI理解语境。
+                          {enableCoherence && (
+                            <span className="block mt-1 text-blue-600 dark:text-blue-400 font-medium">
+                              ℹ️ 当前已启用连贯模式，上下文会同时用于修正。如需仅用于理解，可取消连贯模式。
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                )}
+                
+                {/* 连贯优先模式（实验性功能） */}
+                <div className="border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 bg-yellow-50 dark:bg-yellow-900/20">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={enableCoherence}
+                      onChange={(e) => {
+                        const newValue = e.target.checked;
+                        setEnableCoherence(newValue);
+                        // 启用连贯模式时，如果上下文为0，自动设置为1
+                        if (newValue && contextLines === 0) {
+                          setContextLines(1);
+                        }
+                        // 启用连贯模式时，自动取消翻译上下文（避免重复）
+                        if (newValue) {
+                          setEnableContext(false);
+                        }
+                      }}
+                      className="mt-1 w-4 h-4"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          连贯优先模式
+                        </span>
+                        <span className="text-xs px-2 py-0.5 bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200 rounded">
+                          实验性
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">
+                        允许AI根据上下文修正字幕，使翻译更连贯自然。适用于语音识别字幕，可修正识别错误和不连贯的内容。
+                        {enableCoherence && contextLines === 0 && (
+                          <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
+                            ⚠️ 已自动启用上下文（1行）以支持连贯模式
+                          </span>
+                        )}
+                        {enableCoherence && (
+                          <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
+                            💡 已自动取消"使用翻译上下文"，避免重复。如需同时使用，可手动勾选。
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </>
             )}
           </div>
 
@@ -639,6 +768,54 @@ export default function Home() {
               <option value="ass">ASS</option>
               <option value="vtt">VTT</option>
             </select>
+          </div>
+
+          {/* 独立prompt设置 */}
+          <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20">
+            <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+              独立prompt（单次翻译专用）
+              <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                (可选，用于为当前字幕文件设置特殊的翻译背景或要求)
+              </span>
+            </label>
+            <div className="mb-2">
+              {(appSettings.customPrompts || []).length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  <span className="text-xs text-gray-600 dark:text-gray-400">快速插入：</span>
+                  {(appSettings.customPrompts || []).map((prompt) => (
+                    <button
+                      key={prompt.name}
+                      onClick={() => handleInsertCustomPrompt(prompt.content)}
+                      className="px-2 py-1 text-xs bg-blue-100 dark:bg-blue-800
+                        text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200
+                        dark:hover:bg-blue-700 transition-colors"
+                      title={prompt.content}
+                    >
+                      {prompt.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <textarea
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              rows={4}
+              placeholder="例如：这是一个技术文档，请使用专业术语...&#10;或者：这是对话场景，请保持口语化..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300
+                font-mono text-sm"
+            />
+            <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+              <p>提示：</p>
+              <ul className="list-disc list-inside ml-2 space-y-0.5">
+                <li>此prompt仅对当前翻译任务有效，不会保存到全局设置</li>
+                <li>如果主prompt中包含 {'{custom_prompt}'} 占位符，此内容会替换该占位符</li>
+                <li>如果未设置独立prompt，{'{custom_prompt}'} 占位符会被替换为空字符串</li>
+                <li>点击上方按钮可快速插入常用prompt模板</li>
+              </ul>
+            </div>
           </div>
 
           {/* 进度条 */}
@@ -695,22 +872,41 @@ export default function Home() {
                 </h3>
               </div>
               <div className="max-h-64 overflow-y-auto space-y-2">
-                {previewEntries.slice(-10).map((entry, idx) => (
-                  <div
-                    key={`${entry.index}-${idx}`}
-                    className="text-xs bg-white dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700"
-                  >
-                    <div className="text-gray-500 dark:text-gray-400 mb-1">
-                      #{entry.index} {entry.startTime} → {entry.endTime}
-                    </div>
-                    <div className="text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
-                      {entry.text}
-                    </div>
-                  </div>
-                ))}
-                {previewEntries.length > 10 && (
+                {[...previewEntries]
+                  .sort((a, b) => a.index - b.index) // 按索引排序，确保顺序正确
+                  .slice(0, 20) // 显示前20条，而不是最后10条，这样可以看到翻译进度
+                  .map((entry, idx) => {
+                    const isPlaceholder = entry.text === '[翻译中...]';
+                    return (
+                      <div
+                        key={`${entry.index}-${idx}`}
+                        className={`text-xs bg-white dark:bg-gray-800 p-2 rounded border ${
+                          isPlaceholder 
+                            ? 'border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/20' 
+                            : 'border-gray-200 dark:border-gray-700'
+                        }`}
+                      >
+                        <div className="text-gray-500 dark:text-gray-400 mb-1">
+                          #{entry.index} {entry.startTime} → {entry.endTime}
+                          {isPlaceholder && (
+                            <span className="ml-2 text-yellow-600 dark:text-yellow-400 text-xs">
+                              [翻译中...]
+                            </span>
+                          )}
+                        </div>
+                        <div className={`whitespace-pre-wrap ${
+                          isPlaceholder 
+                            ? 'text-yellow-700 dark:text-yellow-300 italic' 
+                            : 'text-gray-800 dark:text-gray-200'
+                        }`}>
+                          {entry.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+                {previewEntries.length > 20 && (
                   <div className="text-xs text-gray-500 dark:text-gray-400 text-center py-2">
-                    显示最近 10 条，共 {previewEntries.length} 条
+                    显示前 20 条，共 {previewEntries.length} 条
                   </div>
                 )}
               </div>
