@@ -85,18 +85,64 @@ export class SubtitleService {
       throw new Error('未设置翻译器');
     }
 
-    const { mode, multiLineBatchSize, contextLines } = options;
+    const { mode, multiLineBatchSize, contextLines, onProgress, abortSignal } = options;
     const entries = data.entries;
     const texts = entries.map((e) => e.text);
+
+    // 检查是否已取消
+    if (abortSignal?.aborted) {
+      throw new Error('翻译已取消');
+    }
+
+    // 创建包装的进度回调，用于传递已翻译的条目
+    const wrappedProgress = onProgress
+      ? (progress: {
+          percent: number;
+          completed: number;
+          total: number;
+          currentIndex?: number;
+          translatedTexts?: string[];
+        }) => {
+          if (progress.translatedTexts) {
+            // 构建已翻译的条目数组
+            const translatedEntries: SubtitleEntry[] = entries
+              .slice(0, progress.completed)
+              .map((entry, index) => ({
+                ...entry,
+                text: progress.translatedTexts![index]?.trim() || entry.text,
+              }));
+            onProgress({
+              ...progress,
+              translatedEntries,
+            });
+          } else {
+            onProgress(progress);
+          }
+        }
+      : undefined;
 
     let translatedTexts: string[];
 
     if (mode === 'multi') {
       // 多行模式：按 batchSize 合并翻译
-      translatedTexts = await this.translateMultiLine(texts, sourceLang, targetLang, multiLineBatchSize);
+      translatedTexts = await this.translateMultiLine(
+        texts,
+        sourceLang,
+        targetLang,
+        multiLineBatchSize,
+        wrappedProgress,
+        abortSignal
+      );
     } else {
       // 单行模式：逐条翻译，可选上下文
-      translatedTexts = await this.translateSingleLine(texts, sourceLang, targetLang, contextLines);
+      translatedTexts = await this.translateSingleLine(
+        texts,
+        sourceLang,
+        targetLang,
+        contextLines,
+        wrappedProgress,
+        abortSignal
+      );
     }
 
     const translatedEntries: SubtitleEntry[] = entries.map((entry, index) => ({
@@ -118,13 +164,21 @@ export class SubtitleService {
     texts: string[],
     sourceLang: string,
     targetLang: string,
-    contextLines: number
+    contextLines: number,
+    onProgress?: (progress: { percent: number; completed: number; total: number; currentIndex?: number; translatedTexts?: string[] }) => void,
+    abortSignal?: { aborted: boolean }
   ): Promise<string[]> {
     if (!this.translator) throw new Error('未设置翻译器');
 
     const results: string[] = [];
+    const total = texts.length;
 
     for (let i = 0; i < texts.length; i++) {
+      // 检查是否已取消
+      if (abortSignal?.aborted) {
+        throw new Error('翻译已取消');
+      }
+
       const targetText = texts[i];
       let options: { context?: string } | undefined;
 
@@ -149,6 +203,19 @@ export class SubtitleService {
         options
       );
       results.push(translated);
+
+      // 更新进度，包含已翻译的文本数组
+      if (onProgress) {
+        const completed = i + 1;
+        const percent = Math.round((completed / total) * 100);
+        onProgress({
+          percent,
+          completed,
+          total,
+          currentIndex: i,
+          translatedTexts: [...results], // 传递已翻译的文本数组
+        });
+      }
     }
 
     return results;
@@ -164,15 +231,24 @@ export class SubtitleService {
     texts: string[],
     sourceLang: string,
     targetLang: string,
-    batchSize: number
+    batchSize: number,
+    onProgress?: (progress: { percent: number; completed: number; total: number; currentIndex?: number; translatedTexts?: string[] }) => void,
+    abortSignal?: { aborted: boolean }
   ): Promise<string[]> {
     if (!this.translator) throw new Error('未设置翻译器');
 
     const results: string[] = new Array(texts.length);
     const clampedSize = Math.max(2, Math.min(10, batchSize));
     const sep = SubtitleService.MULTI_LINE_SEP;
+    const total = texts.length;
+    const totalBatches = Math.ceil(total / clampedSize);
 
     for (let start = 0; start < texts.length; start += clampedSize) {
+      // 检查是否已取消
+      if (abortSignal?.aborted) {
+        throw new Error('翻译已取消');
+      }
+
       const end = Math.min(start + clampedSize, texts.length);
       const batch = texts.slice(start, end);
       const merged = batch.join(`\n${sep}\n`);
@@ -187,6 +263,26 @@ export class SubtitleService {
 
       for (let j = 0; j < batch.length; j++) {
         results[start + j] = parts[j]?.trim() ?? batch[j];
+      }
+
+      // 更新进度（基于批次），包含已翻译的文本数组
+      if (onProgress) {
+        const completed = Math.min(end, total);
+        const percent = Math.round((completed / total) * 100);
+        // 构建已翻译的文本数组（只包含已完成的，保持顺序）
+        const translatedTexts: string[] = [];
+        for (let k = 0; k < completed; k++) {
+          if (results[k] !== undefined) {
+            translatedTexts.push(results[k]);
+          }
+        }
+        onProgress({
+          percent,
+          completed,
+          total,
+          currentIndex: end - 1,
+          translatedTexts,
+        });
       }
     }
 

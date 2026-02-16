@@ -8,6 +8,29 @@ export type TranslationProvider = 'deepseek' | 'openai' | 'google';
  */
 export type TranslationMode = 'single' | 'multi';
 
+import { SubtitleEntry } from './subtitle';
+
+/**
+ * 进度回调函数类型
+ */
+export type ProgressCallback = (progress: {
+  /** 当前进度 (0-100) */
+  percent: number;
+  /** 已完成数量 */
+  completed: number;
+  /** 总数量 */
+  total: number;
+  /** 当前正在翻译的条目索引 */
+  currentIndex?: number;
+  /** 已翻译的条目数组（用于预览） */
+  translatedEntries?: SubtitleEntry[];
+}) => void;
+
+/**
+ * 取消信号类型（用于检测请求是否被取消）
+ */
+export type AbortSignal = { aborted: boolean };
+
 /**
  * 翻译选项（由页面传入，不持久化）
  */
@@ -18,6 +41,10 @@ export interface TranslationOptions {
   multiLineBatchSize: number;
   /** 单行模式下，作为上下文的字幕条数（前后各 N 条，0-3）。上下文不翻译，仅帮助理解。 */
   contextLines: number;
+  /** 进度回调函数（可选） */
+  onProgress?: ProgressCallback;
+  /** 取消信号（用于检测请求是否被取消） */
+  abortSignal?: AbortSignal;
 }
 
 /**

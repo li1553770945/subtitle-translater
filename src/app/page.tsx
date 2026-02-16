@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import SettingsModal from '@/components/SettingsModal';
 import {
   TranslationProvider,
@@ -10,6 +10,7 @@ import {
   TranslationMode,
 } from '@/types/settings';
 import { loadSettings } from '@/utils/settings';
+import { SubtitleEntry } from '@/types/subtitle';
 
 const PROVIDER_LABELS: Record<TranslationProvider, string> = {
   deepseek: 'DeepSeek',
@@ -30,8 +31,19 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ content: string; filename: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{
+    percent: number;
+    completed: number;
+    total: number;
+    currentIndex?: number;
+  } | null>(null);
+  const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<number | null>(null);
+  const [previewEntries, setPreviewEntries] = useState<SubtitleEntry[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [isCancelled, setIsCancelled] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
 
   // 加载设置
   useEffect(() => {
@@ -76,6 +88,18 @@ export default function Home() {
     }
   }, [provider]);
 
+  // 组件卸载时清理
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (readerRef.current) {
+        readerRef.current.cancel();
+      }
+    };
+  }, []);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
@@ -105,6 +129,18 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setProgress(null);
+    setEstimatedTimeRemaining(null);
+    setPreviewEntries([]);
+    setIsCancelled(false);
+
+    // 创建 AbortController 用于取消请求
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    // 用于计算剩余时间
+    const startTime = Date.now();
+    const progressHistory: { time: number; completed: number }[] = [];
 
     try {
       const serviceConfig = appSettings.services[provider];
@@ -129,18 +165,149 @@ export default function Home() {
       const response = await fetch('/api/translate', {
         method: 'POST',
         body: formData,
+        signal: abortController.signal,
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.error || '翻译失败');
+        const errorData = await response.json();
+        throw new Error(errorData.error || '翻译失败');
       }
 
-      setResult(data);
+      if (!response.body) {
+        throw new Error('响应体为空');
+      }
+
+      const reader = response.body.getReader();
+      readerRef.current = reader;
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      try {
+        while (true) {
+          // 检查是否已取消
+          if (abortController.signal.aborted) {
+            try {
+              await reader.cancel();
+            } catch (e) {
+              // 忽略取消时的错误
+            }
+            break;
+          }
+
+          let readResult;
+          try {
+            readResult = await reader.read();
+          } catch (readError) {
+            // 如果是取消错误，正常退出
+            if (readError instanceof Error && readError.name === 'AbortError') {
+              break;
+            }
+            throw readError;
+          }
+
+          const { done, value } = readResult;
+          if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const data = JSON.parse(line);
+
+            if (data.type === 'progress') {
+              const { percent, completed, total, currentIndex, translatedEntries } = data;
+              setProgress({ percent, completed, total, currentIndex });
+              
+              // 更新预览数据
+              if (translatedEntries && Array.isArray(translatedEntries)) {
+                setPreviewEntries(translatedEntries);
+              }
+
+              // 计算剩余时间
+              const now = Date.now();
+              progressHistory.push({ time: now, completed });
+              
+              // 只保留最近10个进度点用于计算
+              if (progressHistory.length > 10) {
+                progressHistory.shift();
+              }
+
+              if (completed > 0 && progressHistory.length >= 2) {
+                // 计算平均速度（每秒完成的数量）
+                const recentHistory = progressHistory.slice(-5); // 使用最近5个点
+                const timeDiff = recentHistory[recentHistory.length - 1].time - recentHistory[0].time;
+                const completedDiff = recentHistory[recentHistory.length - 1].completed - recentHistory[0].completed;
+                
+                if (timeDiff > 0 && completedDiff > 0) {
+                  const speed = completedDiff / (timeDiff / 1000); // 每秒完成的数量
+                  const remaining = total - completed;
+                  const estimatedSeconds = remaining / speed;
+                  setEstimatedTimeRemaining(Math.max(0, Math.round(estimatedSeconds)));
+                }
+              }
+            } else if (data.type === 'result') {
+              setResult({
+                content: data.content,
+                filename: data.filename,
+              });
+              setProgress(null);
+              setEstimatedTimeRemaining(null);
+              setPreviewEntries([]);
+            } else if (data.type === 'error') {
+              throw new Error(data.error || '翻译失败');
+            }
+          } catch (parseError) {
+            console.error('解析进度数据失败:', parseError, line);
+          }
+        }
+        }
+      } catch (streamError) {
+        // 流读取错误，如果是取消则忽略
+        if (!(streamError instanceof Error && streamError.name === 'AbortError')) {
+          throw streamError;
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '翻译失败');
+      // 如果是用户主动取消，保留预览结果
+      if (err instanceof Error && (err.name === 'AbortError' || abortController.signal.aborted)) {
+        setIsCancelled(true);
+        setError(null); // 不显示错误信息，使用取消提示
+        // 保留预览结果和进度信息
+        // previewEntries 和 progress 保持不变
+      } else {
+        setError(err instanceof Error ? err.message : '翻译失败');
+        setProgress(null);
+        setEstimatedTimeRemaining(null);
+        setPreviewEntries([]);
+      }
     } finally {
+      setLoading(false);
+      abortControllerRef.current = null;
+      readerRef.current = null;
+    }
+  };
+
+  // 终止翻译
+  const handleCancel = async () => {
+    try {
+      if (readerRef.current) {
+        try {
+          await readerRef.current.cancel();
+        } catch (e) {
+          // 忽略取消时的错误
+        }
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    } catch (e) {
+      // 忽略所有取消相关的错误
+    } finally {
+      setIsCancelled(true);
       setLoading(false);
     }
   };
@@ -153,6 +320,58 @@ export default function Home() {
     const a = document.createElement('a');
     a.href = url;
     a.download = result.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // 格式化剩余时间（秒 -> 分:秒）
+  const formatTime = (seconds: number): string => {
+    if (seconds < 60) {
+      return `${seconds}秒`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}分${remainingSeconds}秒`;
+  };
+
+  // 生成字幕文件内容（客户端生成）
+  const generateSubtitleContent = (entries: SubtitleEntry[], format: string): string => {
+    if (format === 'srt') {
+      const lines: string[] = [];
+      const sortedEntries = [...entries].sort((a, b) => a.index - b.index);
+      
+      for (const entry of sortedEntries) {
+        lines.push(entry.index.toString());
+        lines.push(`${entry.startTime} --> ${entry.endTime}`);
+        lines.push(entry.text);
+        lines.push('');
+      }
+      
+      return lines.join('\n');
+    }
+    // 其他格式可以后续扩展
+    return entries.map(e => `${e.index}\n${e.startTime} --> ${e.endTime}\n${e.text}`).join('\n\n');
+  };
+
+  // 保存部分结果
+  const handleSavePartial = () => {
+    if (previewEntries.length === 0) {
+      setError('没有可保存的翻译结果');
+      return;
+    }
+
+    const content = generateSubtitleContent(previewEntries, outputFormat);
+    const filename = file
+      ? file.name.replace(/\.[^.]+$/, `_partial_${previewEntries.length}.${outputFormat}`)
+      : `partial_translated.${outputFormat}`;
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -422,6 +641,82 @@ export default function Home() {
             </select>
           </div>
 
+          {/* 进度条 */}
+          {(loading || isCancelled) && progress && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
+                <span>
+                  翻译进度: {progress.completed} / {progress.total} ({progress.percent}%)
+                </span>
+                {estimatedTimeRemaining !== null && (
+                  <span>
+                    预计剩余时间: {formatTime(estimatedTimeRemaining)}
+                  </span>
+                )}
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+                <div
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                  style={{ width: `${progress.percent}%` }}
+                />
+              </div>
+              <div className="flex gap-2">
+                {previewEntries.length > 0 && (
+                  <button
+                    onClick={handleSavePartial}
+                    className="flex-1 bg-yellow-600 hover:bg-yellow-700
+                      text-white font-semibold py-2 px-4 rounded-lg
+                      transition-colors duration-200 text-sm"
+                  >
+                    保存当前进度 ({previewEntries.length} 条)
+                  </button>
+                )}
+                {loading && (
+                  <button
+                    onClick={handleCancel}
+                    className="bg-red-600 hover:bg-red-700
+                      text-white font-semibold py-2 px-4 rounded-lg
+                      transition-colors duration-200 text-sm"
+                  >
+                    终止翻译
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 翻译预览 */}
+          {previewEntries.length > 0 && (
+            <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  翻译预览 ({previewEntries.length} 条)
+                  {isCancelled && <span className="ml-2 text-xs text-yellow-600 dark:text-yellow-400">(已终止)</span>}
+                </h3>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-2">
+                {previewEntries.slice(-10).map((entry, idx) => (
+                  <div
+                    key={`${entry.index}-${idx}`}
+                    className="text-xs bg-white dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700"
+                  >
+                    <div className="text-gray-500 dark:text-gray-400 mb-1">
+                      #{entry.index} {entry.startTime} → {entry.endTime}
+                    </div>
+                    <div className="text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                      {entry.text}
+                    </div>
+                  </div>
+                ))}
+                {previewEntries.length > 10 && (
+                  <div className="text-xs text-gray-500 dark:text-gray-400 text-center py-2">
+                    显示最近 10 条，共 {previewEntries.length} 条
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* 翻译按钮 */}
           <button
             onClick={handleTranslate}
@@ -434,12 +729,42 @@ export default function Home() {
             {loading ? '翻译中...' : '开始翻译'}
           </button>
 
-          {/* 错误信息 */}
-          {error && (
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800
-              text-red-700 dark:text-red-400 px-4 py-3 rounded-md">
-              {error}
+          {/* 错误信息或取消提示 */}
+          {(error || isCancelled) && (
+            <div className={`${
+              isCancelled 
+                ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-400'
+                : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
+            } border px-4 py-3 rounded-md`}>
+              {isCancelled ? (
+                <div>
+                  <div className="font-semibold mb-1">翻译已终止</div>
+                  {previewEntries.length > 0 ? (
+                    <div className="text-sm">
+                      已翻译 {previewEntries.length} 条，您可以保存部分结果或重新开始翻译。
+                    </div>
+                  ) : (
+                    <div className="text-sm">
+                      翻译已终止，没有可保存的结果。
+                    </div>
+                  )}
+                </div>
+              ) : (
+                error
+              )}
             </div>
+          )}
+
+          {/* 终止后显示保存按钮 */}
+          {isCancelled && previewEntries.length > 0 && !loading && (
+            <button
+              onClick={handleSavePartial}
+              className="w-full bg-yellow-600 hover:bg-yellow-700
+                text-white font-semibold py-3 px-6 rounded-lg
+                transition-colors duration-200"
+            >
+              保存已翻译的部分 ({previewEntries.length} 条)
+            </button>
           )}
 
           {/* 结果 */}
