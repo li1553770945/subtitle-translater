@@ -1,4 +1,4 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 // 暴露受保护的方法给渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -9,5 +9,10 @@ contextBridge.exposeInMainWorld('electron', {
     node: process.versions.node,
     chrome: process.versions.chrome,
     electron: process.versions.electron,
+  },
+  // 设置文件读写 API
+  settings: {
+    read: () => ipcRenderer.invoke('settings:read'),
+    write: (settings) => ipcRenderer.invoke('settings:write', settings),
   },
 });

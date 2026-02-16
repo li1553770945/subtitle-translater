@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "next lint",
     "electron": "electron .",
-    "electron:dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "concurrently --kill-others \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:build": "next build && electron-builder",
     "electron:build:win": "next build && electron-builder --win",
     "electron:build:mac": "next build && electron-builder --mac",
