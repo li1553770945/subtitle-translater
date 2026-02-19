@@ -80,14 +80,13 @@ export class SubtitleService {
       multiLineBatchSize: 3,
       contextLines: 0,
       enableContext: false,
-      enableCoherence: false,
     }
   ): Promise<SubtitleData> {
     if (!this.translator) {
       throw new Error('未设置翻译器');
     }
 
-    const { mode, multiLineBatchSize, contextLines, enableContext, enableCoherence, parallelCount, onProgress, abortSignal } = options;
+    const { mode, processMode, multiLineBatchSize, contextLines, enableContext, parallelCount, onProgress, abortSignal } = options;
     const entries = data.entries;
     const texts = entries.map((e) => e.text);
 
@@ -96,7 +95,7 @@ export class SubtitleService {
       throw new Error('翻译已取消');
     }
 
-    // 创建包装的进度回调，用于传递已翻译的条目（包括占位符）
+    // 创建包装的进度回调，用于传递已翻译的条目（并行时含占位符，串行时仅已完成条目）
     const wrappedProgress = onProgress
       ? (progress: {
           percent: number;
@@ -106,18 +105,25 @@ export class SubtitleService {
           translatedTexts?: string[];
         }) => {
           if (progress.translatedTexts) {
-            // 构建已翻译的条目数组，按索引顺序，未翻译的用占位符
-            const translatedEntries: SubtitleEntry[] = entries.map((entry, index) => {
-              const translatedText = progress.translatedTexts![index];
-              // 如果该索引有翻译结果，使用翻译结果；否则使用占位符
-              const text = translatedText !== undefined && translatedText !== null && translatedText.trim() !== ''
-                ? translatedText.trim()
-                : '[翻译中...]'; // 占位符
-              return {
+            const arr = progress.translatedTexts;
+            const isParallelStyle = arr.length >= entries.length;
+            let translatedEntries: SubtitleEntry[];
+            if (isParallelStyle) {
+              // 并行模式：数组长度=总数，按索引顺序，未完成的用占位符
+              translatedEntries = entries.map((entry, index) => {
+                const translatedText = arr[index];
+                const text = translatedText !== undefined && translatedText !== null && translatedText.trim() !== ''
+                  ? translatedText.trim()
+                  : '[翻译中...]';
+                return { ...entry, text };
+              });
+            } else {
+              // 串行/顺序模式：只传了已完成的片段，只展示已完成的条目，不显示占位符
+              translatedEntries = entries.slice(0, arr.length).map((entry, index) => ({
                 ...entry,
-                text,
-              };
-            });
+                text: (arr[index] ?? '').trim() || entry.text,
+              }));
+            }
             onProgress({
               ...progress,
               translatedEntries,
@@ -138,7 +144,8 @@ export class SubtitleService {
         targetLang,
         multiLineBatchSize,
         wrappedProgress,
-        abortSignal
+        abortSignal,
+        processMode
       );
     } else {
       // 单行模式：逐条翻译，可选上下文和连贯模式，支持并行
@@ -148,10 +155,10 @@ export class SubtitleService {
         targetLang,
         contextLines,
         enableContext,
-        enableCoherence,
         parallelCount,
         wrappedProgress,
-        abortSignal
+        abortSignal,
+        processMode
       );
     }
 
@@ -167,11 +174,10 @@ export class SubtitleService {
   }
 
   /**
-   * 单行模式：逐条翻译，可选带上下文和连贯模式，支持并行翻译
+   * 单行模式：逐条翻译，可选带上下文，支持并行翻译
    * enableContext: 是否使用翻译上下文（通过contextPrompt插入）
-   * enableCoherence: 是否使用连贯模式（通过coherencePrompt插入）
-   * 两者可以独立控制，但都会使用相同的上下文数据（如果contextLines > 0）
    * parallelCount: 并行翻译数量（2-10），如果未指定或为1，则串行翻译
+   * processMode: 处理模式，'coherence'表示连贯模式（不翻译），'translate'或undefined表示翻译模式
    */
   private async translateSingleLine(
     texts: string[],
@@ -179,10 +185,10 @@ export class SubtitleService {
     targetLang: string,
     contextLines: number,
     enableContext: boolean = false,
-    enableCoherence: boolean = false,
     parallelCount?: number,
     onProgress?: (progress: { percent: number; completed: number; total: number; currentIndex?: number; translatedTexts?: string[] }) => void,
-    abortSignal?: { aborted: boolean }
+    abortSignal?: { aborted: boolean },
+    processMode?: 'translate' | 'coherence'
   ): Promise<string[]> {
     if (!this.translator) throw new Error('未设置翻译器');
 
@@ -197,9 +203,9 @@ export class SubtitleService {
         targetLang,
         contextLines,
         enableContext,
-        enableCoherence,
         onProgress,
-        abortSignal
+        abortSignal,
+        processMode
       );
     }
 
@@ -217,10 +223,11 @@ export class SubtitleService {
       }
 
       const targetText = texts[index];
-      let options: { context?: string; enableContext?: boolean; enableCoherence?: boolean } | undefined;
-
       // 连贯模式需要上下文，如果未设置上下文行数，自动使用至少1行上下文
-      const effectiveContextLines = enableCoherence ? Math.max(contextLines, 1) : contextLines;
+      const isCoherenceMode = processMode === 'coherence';
+      const effectiveContextLines = isCoherenceMode ? Math.max(contextLines, 1) : contextLines;
+      
+      let options: { context?: string; enableContext?: boolean; processMode?: 'translate' | 'coherence' } | undefined;
 
       if (effectiveContextLines > 0) {
         const before = texts.slice(Math.max(0, index - effectiveContextLines), index);
@@ -236,14 +243,18 @@ export class SubtitleService {
         options = { 
           context: parts.join('\n\n'),
           enableContext: enableContext || undefined,
-          enableCoherence: enableCoherence || undefined
+          processMode: processMode
         };
-      } else if (enableCoherence) {
+      } else if (isCoherenceMode) {
         // 即使没有上下文，也传递连贯模式标志（虽然效果可能有限）
-        options = { enableCoherence: true };
+        options = { 
+          processMode: processMode
+        };
       } else if (enableContext) {
         // 如果启用了上下文但没有上下文行数，不传递context
         options = { enableContext: true };
+      } else if (processMode) {
+        options = { processMode: processMode };
       }
 
       try {
@@ -386,9 +397,9 @@ export class SubtitleService {
     targetLang: string,
     contextLines: number,
     enableContext: boolean = false,
-    enableCoherence: boolean = false,
     onProgress?: (progress: { percent: number; completed: number; total: number; currentIndex?: number; translatedTexts?: string[] }) => void,
-    abortSignal?: { aborted: boolean }
+    abortSignal?: { aborted: boolean },
+    processMode?: 'translate' | 'coherence'
   ): Promise<string[]> {
     if (!this.translator) throw new Error('未设置翻译器');
 
@@ -402,10 +413,11 @@ export class SubtitleService {
       }
 
       const targetText = texts[i];
-      let options: { context?: string; enableContext?: boolean; enableCoherence?: boolean } | undefined;
-
       // 连贯模式需要上下文，如果未设置上下文行数，自动使用至少1行上下文
-      const effectiveContextLines = enableCoherence ? Math.max(contextLines, 1) : contextLines;
+      const isCoherenceMode = processMode === 'coherence';
+      const effectiveContextLines = isCoherenceMode ? Math.max(contextLines, 1) : contextLines;
+      
+      let options: { context?: string; enableContext?: boolean; processMode?: 'translate' | 'coherence' } | undefined;
 
       if (effectiveContextLines > 0) {
         const before = texts.slice(Math.max(0, i - effectiveContextLines), i);
@@ -421,14 +433,18 @@ export class SubtitleService {
         options = { 
           context: parts.join('\n\n'),
           enableContext: enableContext || undefined,
-          enableCoherence: enableCoherence || undefined
+          processMode: processMode
         };
-      } else if (enableCoherence) {
+      } else if (isCoherenceMode) {
         // 即使没有上下文，也传递连贯模式标志（虽然效果可能有限）
-        options = { enableCoherence: true };
+        options = { 
+          processMode: processMode
+        };
       } else if (enableContext) {
         // 如果启用了上下文但没有上下文行数，不传递context
         options = { enableContext: true };
+      } else if (processMode) {
+        options = { processMode: processMode };
       }
 
       const translated = await this.translator.translate(
@@ -468,7 +484,8 @@ export class SubtitleService {
     targetLang: string,
     batchSize: number,
     onProgress?: (progress: { percent: number; completed: number; total: number; currentIndex?: number; translatedTexts?: string[] }) => void,
-    abortSignal?: { aborted: boolean }
+    abortSignal?: { aborted: boolean },
+    processMode?: 'translate' | 'coherence'
   ): Promise<string[]> {
     if (!this.translator) throw new Error('未设置翻译器');
 
@@ -487,13 +504,22 @@ export class SubtitleService {
       const end = Math.min(start + clampedSize, texts.length);
       const batch = texts.slice(start, end);
       const merged = batch.join(`\n${sep}\n`);
-      const instruction =
-        `请将以下 ${batch.length} 段字幕分别翻译成目标语言。` +
-        `严格使用 "${sep}" 分隔每一段的翻译结果，共应输出 ${batch.length} 段，顺序与输入一致。` +
-        `仅输出翻译内容，不要编号或说明。`;
+      
+      let instruction: string;
+      if (processMode === 'coherence') {
+        instruction =
+          `请根据上下文剧情，对以下 ${batch.length} 段字幕分别进行脑补和修正，使其符合剧情逻辑，语言通顺，标点符号正确。` +
+          `严格使用 "${sep}" 分隔每一段的结果，共应输出 ${batch.length} 段，顺序与输入一致。` +
+          `如果原字幕有明显错误或不合理之处，请大胆猜测并修正。仅输出修正后的内容，不要编号或说明。`;
+      } else {
+        instruction =
+          `请将以下 ${batch.length} 段字幕分别翻译成目标语言。` +
+          `严格使用 "${sep}" 分隔每一段的翻译结果，共应输出 ${batch.length} 段，顺序与输入一致。` +
+          `仅输出翻译内容，不要编号或说明。`;
+      }
       const content = instruction + '\n\n' + merged;
 
-      const translated = await this.translator.translate(content, sourceLang, targetLang);
+      const translated = await this.translator.translate(content, sourceLang, targetLang, { processMode });
       const parts = translated.split(sep);
 
       for (let j = 0; j < batch.length; j++) {
@@ -562,7 +588,6 @@ export class SubtitleService {
         multiLineBatchSize: 3,
         contextLines: 0,
         enableContext: false,
-        enableCoherence: false,
       }
     );
 
