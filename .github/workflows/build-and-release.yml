@@ -118,8 +118,10 @@ jobs:
   release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
-    # 只在 main 分支推送时发布 release
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # main：正式 release；dev：pre-release（GitHub 预发布）
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') &&
+      github.event_name == 'push'
     
     steps:
       - name: Checkout code
@@ -149,6 +151,20 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+
+      - name: Set release metadata (main vs dev)
+        id: release-meta
+        run: |
+          VERSION="${{ steps.package-version.outputs.version }}"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tag_name=v${VERSION}" >> $GITHUB_OUTPUT
+            echo "release_name=Release v${VERSION}" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=v${VERSION}-dev.${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "release_name=Pre-release v${VERSION} (dev)" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
       
       - name: List artifacts
         run: |
@@ -164,10 +180,12 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.package-version.outputs.version }}
-          name: Release v${{ steps.package-version.outputs.version }}
+          tag_name: ${{ steps.release-meta.outputs.tag_name }}
+          name: ${{ steps.release-meta.outputs.release_name }}
           body: |
             ## 字幕翻译工具 v${{ steps.package-version.outputs.version }}
+            
+            ${{ github.ref == 'refs/heads/dev' && '**本构建为 dev 分支预发布（Pre-release），非正式版。**' || '' }}
             
             ### 📦 下载
             
@@ -190,6 +208,6 @@ jobs:
             artifacts/macos/**
             artifacts/linux/**
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.release-meta.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
