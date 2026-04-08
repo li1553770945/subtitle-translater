@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SubtitleService } from '@/core/SubtitleService';
 import { LLMTranslator } from '@/core/translators/LLMTranslator';
-import { TranslationProvider, TranslationOptions, TranslationMode, DEFAULT_PROMPT } from '@/types/settings';
+import { TranslationProvider, TranslationOptions, TranslationMode, ProcessMode, DEFAULT_PROMPT } from '@/types/settings';
 import { SubtitleEntry } from '@/types/subtitle';
 
 /**
@@ -21,10 +21,11 @@ export async function POST(request: NextRequest) {
     // 翻译选项
     const modeRaw = formData.get('translationMode') as string;
     const translationMode: TranslationMode = modeRaw === 'multi' ? 'multi' : 'single';
+    const processModeRaw = formData.get('processMode') as string;
+    const processMode: ProcessMode | undefined = processModeRaw === 'coherence' ? 'coherence' : (processModeRaw === 'translate' ? 'translate' : undefined);
     const multiLineBatchSize = Math.min(10, Math.max(2, parseInt(String(formData.get('multiLineBatchSize') || '3'), 10) || 3));
     const contextLines = Math.min(3, Math.max(0, parseInt(String(formData.get('contextLines') || '0'), 10) || 0));
     const enableContext = formData.get('enableContext') === 'true';
-    const enableCoherence = formData.get('enableCoherence') === 'true';
     const parallelCountRaw = formData.get('parallelCount') as string;
     const parallelCount = parallelCountRaw ? Math.min(10, Math.max(2, parseInt(parallelCountRaw, 10) || 1)) : undefined;
 
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
     const baseUrl = formData.get('baseUrl') as string || undefined;
     const prompt = formData.get('prompt') as string;
     const contextPrompt = (formData.get('contextPrompt') as string) || undefined;
-    const coherencePrompt = (formData.get('coherencePrompt') as string) || undefined;
+    const coherenceModePrompt = (formData.get('coherenceModePrompt') as string) || undefined;
     const customPrompt = (formData.get('customPrompt') as string) || undefined;
 
     if (!file) {
@@ -69,7 +70,7 @@ export async function POST(request: NextRequest) {
       baseUrl,
       prompt: prompt || DEFAULT_PROMPT,
       contextPrompt,
-      coherencePrompt,
+      coherenceModePrompt,
       customPrompt,
     });
 
@@ -129,10 +130,10 @@ export async function POST(request: NextRequest) {
           
           const translationOptions: TranslationOptions = {
             mode: translationMode,
+            processMode,
             multiLineBatchSize,
             contextLines,
             enableContext,
-            enableCoherence,
             parallelCount,
             onProgress: sendProgress,
             abortSignal: abortSignalWrapper,

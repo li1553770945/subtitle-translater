@@ -4,15 +4,15 @@ import { useState, useEffect, useRef } from 'react';
 import SettingsModal from '@/components/SettingsModal';
 import {
   TranslationProvider,
-  PROVIDER_MODELS,
   AppSettings,
   DEFAULT_SETTINGS,
   TranslationMode,
+  ProcessMode,
 } from '@/types/settings';
 import { loadSettings } from '@/utils/settings';
 import { SubtitleEntry } from '@/types/subtitle';
 
-const PROVIDER_LABELS: Record<TranslationProvider, string> = {
+const TYPE_LABELS: Record<TranslationProvider, string> = {
   deepseek: 'DeepSeek',
   openai: 'OpenAI',
   google: 'Google',
@@ -27,10 +27,12 @@ export default function Home() {
   const [multiLineBatchSize, setMultiLineBatchSize] = useState(3);
   const [contextLines, setContextLines] = useState(0);
   const [enableContext, setEnableContext] = useState(false);
-  const [enableCoherence, setEnableCoherence] = useState(false);
+  const [processMode, setProcessMode] = useState<ProcessMode | undefined>(undefined);
   const [parallelCount, setParallelCount] = useState<number | undefined>(undefined);
-  const [provider, setProvider] = useState<TranslationProvider>('deepseek');
+  /** 选中的 API 配置 id（翻译时用该配置的 type、apiKey、baseUrl、models） */
+  const [selectedApiConfigId, setSelectedApiConfigId] = useState<string>('');
   const [model, setModel] = useState<string>('');
+  const [promptSetId, setPromptSetId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ content: string; filename: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,30 +69,40 @@ export default function Home() {
     };
   }, []);
 
-  // 初始化：选择第一个已配置的供应商和模型
+  const apiConfigs = appSettings.apiConfigs || [];
+  const enabledConfigs = apiConfigs.filter((c) => c.enabled && c.apiKey);
+  const selectedConfig = selectedApiConfigId
+    ? apiConfigs.find((c) => c.id === selectedApiConfigId)
+    : enabledConfigs[0];
+  const availableModels = selectedConfig?.models ?? [];
+
+  // 初始化：选择第一个已配置的 API 配置、模型和 Prompt 套装（仅随设置加载时同步一次）
   useEffect(() => {
-    const enabledServices = (['deepseek', 'openai', 'google'] as TranslationProvider[]).filter(
-      (p) => appSettings.services[p].enabled && appSettings.services[p].apiKey
-    );
-    
-    if (enabledServices.length > 0) {
-      const firstEnabled = enabledServices[0];
-      setProvider(firstEnabled);
-      setModel(PROVIDER_MODELS[firstEnabled][0] || '');
-    } else {
-      // 如果没有已配置的服务，使用默认值
-      setModel(PROVIDER_MODELS[provider][0] || '');
+    const configs = appSettings.apiConfigs || [];
+    const enabled = configs.filter((c) => c.enabled && c.apiKey);
+    if (enabled.length > 0) {
+      const first = enabled[0];
+      const needSwitch = !selectedApiConfigId || !configs.some((c) => c.id === selectedApiConfigId && c.enabled && c.apiKey);
+      if (needSwitch) {
+        setSelectedApiConfigId(first.id);
+        setModel(first.models[0] ?? '');
+      }
     }
+    const sets = appSettings.promptSets || [];
+    if (sets.length > 0) {
+      setPromptSetId((prev) => (sets.some((ps) => ps.id === prev) ? prev : sets[0].id));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅随设置加载时同步
   }, [appSettings]);
 
-  // 当供应商改变时，更新模型选择
+  // 当选中的 API 配置改变时，模型切到该配置的第一个
   useEffect(() => {
-    const availableModels = PROVIDER_MODELS[provider];
-    if (availableModels.length > 0) {
-      // 总是设置为第一个可用模型（供应商改变时）
-      setModel(availableModels[0]);
+    if (selectedConfig && selectedConfig.models.length > 0) {
+      if (!selectedConfig.models.includes(model)) {
+        setModel(selectedConfig.models[0]);
+      }
     }
-  }, [provider]);
+  }, [selectedApiConfigId, selectedConfig?.id]);
 
   // 组件卸载时清理
   useEffect(() => {
@@ -133,10 +145,8 @@ export default function Home() {
       return;
     }
 
-    // 检查选中的供应商是否已配置
-    const serviceConfig = appSettings.services[provider];
-    if (!serviceConfig.enabled || !serviceConfig.apiKey) {
-      setError(`请先在设置中配置 ${PROVIDER_LABELS[provider]} 的 API Key`);
+    if (!selectedConfig || !selectedConfig.enabled || !selectedConfig.apiKey) {
+      setError('请先在设置中选择并配置一项已启用的 API 配置');
       return;
     }
 
@@ -157,8 +167,13 @@ export default function Home() {
     const progressHistory: { time: number; completed: number }[] = [];
 
     try {
-      const serviceConfig = appSettings.services[provider];
-      
+      const promptSet = (appSettings.promptSets || []).find((ps) => ps.id === promptSetId);
+      if (!promptSet) {
+        setError('请选择 Prompt 套装');
+        setLoading(false);
+        return;
+      }
+
       const formData = new FormData();
       formData.append('file', file);
       formData.append('sourceLang', sourceLang);
@@ -168,19 +183,21 @@ export default function Home() {
       formData.append('multiLineBatchSize', String(multiLineBatchSize));
       formData.append('contextLines', String(contextLines));
       formData.append('enableContext', String(enableContext));
-      formData.append('enableCoherence', String(enableCoherence));
+      if (processMode) {
+        formData.append('processMode', processMode);
+      }
       if (parallelCount !== undefined) {
         formData.append('parallelCount', String(parallelCount));
       }
-      formData.append('provider', provider);
+      formData.append('provider', selectedConfig.type);
       formData.append('model', model);
-      formData.append('apiKey', serviceConfig.apiKey);
-      if (serviceConfig.baseUrl) {
-        formData.append('baseUrl', serviceConfig.baseUrl);
+      formData.append('apiKey', selectedConfig.apiKey);
+      if (selectedConfig.baseUrl) {
+        formData.append('baseUrl', selectedConfig.baseUrl);
       }
-      formData.append('prompt', serviceConfig.prompt);
-      formData.append('contextPrompt', serviceConfig.contextPrompt ?? '');
-      formData.append('coherencePrompt', serviceConfig.coherencePrompt ?? '');
+      formData.append('prompt', promptSet.prompt);
+      formData.append('contextPrompt', promptSet.contextPrompt ?? '');
+      formData.append('coherenceModePrompt', promptSet.coherenceModePrompt ?? '');
       formData.append('customPrompt', customPrompt.trim());
 
       const response = await fetch('/api/translate', {
@@ -462,33 +479,31 @@ export default function Home() {
             )}
           </div>
 
-          {/* 翻译服务选择 */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* 翻译服务与 Prompt 选择 */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-                翻译供应商
+                API 配置
               </label>
               <select
-                value={provider}
+                value={selectedApiConfigId || (enabledConfigs[0]?.id ?? '')}
                 onChange={(e) => {
-                  const newProvider = e.target.value as TranslationProvider;
-                  setProvider(newProvider);
-                  // 更新模型为第一个可用模型
-                  const availableModels = PROVIDER_MODELS[newProvider];
-                  if (availableModels.length > 0) {
-                    setModel(availableModels[0]);
+                  const id = e.target.value;
+                  setSelectedApiConfigId(id);
+                  const cfg = apiConfigs.find((c) => c.id === id);
+                  if (cfg?.models?.length) {
+                    setModel(cfg.models[0]);
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
                   focus:outline-none focus:ring-blue-500 focus:border-blue-500
                   dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
               >
-                {(['deepseek', 'openai', 'google'] as TranslationProvider[]).map((p) => {
-                  const serviceConfig = appSettings.services[p];
-                  const isConfigured = serviceConfig.enabled && serviceConfig.apiKey;
+                {apiConfigs.map((c) => {
+                  const isConfigured = c.enabled && c.apiKey;
                   return (
-                    <option key={p} value={p}>
-                      {PROVIDER_LABELS[p]} {isConfigured ? '' : '(未配置)'}
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({TYPE_LABELS[c.type]}) {isConfigured ? '' : '(未配置)'}
                     </option>
                   );
                 })}
@@ -504,14 +519,38 @@ export default function Home() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
                   focus:outline-none focus:ring-blue-500 focus:border-blue-500
                   dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
-                disabled={!PROVIDER_MODELS[provider] || PROVIDER_MODELS[provider].length === 0}
+                disabled={!availableModels.length}
               >
-                {PROVIDER_MODELS[provider]?.map((m) => (
+                {availableModels.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                Prompt 套装
+              </label>
+              <select
+                value={promptSetId}
+                onChange={(e) => setPromptSetId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                  focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                  dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
+              >
+                {(appSettings.promptSets || []).map((ps) => (
+                  <option key={ps.id} value={ps.id}>
+                    {ps.name}
+                  </option>
+                ))}
+                {(appSettings.promptSets || []).length === 0 && (
+                  <option value="">请先在设置中添加 Prompt 套装</option>
+                )}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                在设置中可添加多套，与模型独立选择
+              </p>
             </div>
           </div>
 
@@ -624,13 +663,13 @@ export default function Home() {
                   <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                     并行翻译数量
                     <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
-                      (2–10，留空则串行翻译)
+                      (1–10，1则串行翻译)
                     </span>
                   </label>
                   <div className="flex items-center gap-3">
                     <input
                       type="range"
-                      min={2}
+                      min={1}
                       max={10}
                       value={parallelCount || 1}
                       onChange={(e) => {
@@ -660,7 +699,7 @@ export default function Home() {
                     <input
                       type="range"
                       min={0}
-                      max={3}
+                      max={10}
                       value={contextLines}
                       onChange={(e) => setContextLines(parseInt(e.target.value, 10))}
                       className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
@@ -673,7 +712,7 @@ export default function Home() {
                 </div>
 
                 {/* 翻译上下文开关 */}
-                {contextLines > 0 && (
+                {contextLines > 0 && processMode=="translate" && (
                   <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900/50">
                     <label className="flex items-start gap-3 cursor-pointer">
                       <input
@@ -690,63 +729,75 @@ export default function Home() {
                             使用翻译上下文
                           </span>
                         </div>
+                      </div>
+                    </label>
+                  </div>
+                )}
+                
+                {/* 处理模式选择 */}
+                <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20">
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    处理模式
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                      (选择处理方式)
+                    </span>
+                  </label>
+                  <div className="space-y-2">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="processMode"
+                        value="translate"
+                        checked={processMode === undefined || processMode === 'translate'}
+                        onChange={() => {
+                          setProcessMode('translate');
+                        }}
+                        className="mt-1 w-4 h-4"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          翻译模式（默认）
+                        </span>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                          将源语言翻译成目标语言，保持原意。
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="processMode"
+                        value="coherence"
+                        checked={processMode === 'coherence'}
+                        onChange={() => {
+                          setProcessMode('coherence');
+                          // 启用连贯模式时，如果上下文为0，自动设置为1
+                          if (contextLines === 0) {
+                            setContextLines(1);
+                          }
+                        }}
+                        className="mt-1 w-4 h-4"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            连贯模式（剧情脑补）
+                          </span>
+                          <span className="text-xs px-2 py-0.5 bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200 rounded">
+                            实验性
+                          </span>
+                        </div>
                         <p className="text-xs text-gray-600 dark:text-gray-400">
-                          将上下文通过 contextPrompt 插入，帮助AI理解语境。
-                          {enableCoherence && (
-                            <span className="block mt-1 text-blue-600 dark:text-blue-400 font-medium">
-                              ℹ️ 当前已启用连贯模式，上下文会同时用于修正。如需仅用于理解，可取消连贯模式。
+                          只修正当前句：通顺、逻辑合理、标点正确，可合理推测并修正明显识别错误。只输出修正后的台词，不添加括号内的动作/神态等原句没有的内容，不无中生有。
+                          {processMode === 'coherence' && contextLines === 0 && (
+                            <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
+                              ⚠️ 已自动启用上下文（1行）以支持连贯模式
                             </span>
                           )}
                         </p>
                       </div>
                     </label>
                   </div>
-                )}
-                
-                {/* 连贯优先模式（实验性功能） */}
-                <div className="border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 bg-yellow-50 dark:bg-yellow-900/20">
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enableCoherence}
-                      onChange={(e) => {
-                        const newValue = e.target.checked;
-                        setEnableCoherence(newValue);
-                        // 启用连贯模式时，如果上下文为0，自动设置为1
-                        if (newValue && contextLines === 0) {
-                          setContextLines(1);
-                        }
-                        // 启用连贯模式时，自动取消翻译上下文（避免重复）
-                        if (newValue) {
-                          setEnableContext(false);
-                        }
-                      }}
-                      className="mt-1 w-4 h-4"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                          连贯优先模式
-                        </span>
-                        <span className="text-xs px-2 py-0.5 bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200 rounded">
-                          实验性
-                        </span>
-                      </div>
-                      <p className="text-xs text-gray-600 dark:text-gray-400">
-                        允许AI根据上下文修正字幕，使翻译更连贯自然。适用于语音识别字幕，可修正识别错误和不连贯的内容。
-                        {enableCoherence && contextLines === 0 && (
-                          <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
-                            ⚠️ 已自动启用上下文（1行）以支持连贯模式
-                          </span>
-                        )}
-                        {enableCoherence && (
-                          <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
-                            💡 已自动取消"使用翻译上下文"，避免重复。如需同时使用，可手动勾选。
-                          </span>
-                        )}
-                      </p>
-                    </div>
-                  </label>
                 </div>
               </>
             )}
