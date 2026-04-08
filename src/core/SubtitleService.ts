@@ -258,6 +258,9 @@ export class SubtitleService {
       }
 
       try {
+        if (!this.translator) {
+          throw new Error('翻译器未初始化，请先调用 setTranslator');
+        }
         const translated = await this.translator.translate(
           targetText,
           sourceLang,

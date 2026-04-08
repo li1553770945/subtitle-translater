@@ -1,3 +1,5 @@
+import { ProcessMode } from '@/types/settings';
+
 /**
  * 翻译器抽象接口
  */
@@ -7,14 +9,14 @@ export interface Translator {
    * @param text 要翻译的文本
    * @param sourceLang 源语言代码（如：en, zh, ja）
    * @param targetLang 目标语言代码（如：zh, en, ja）
-   * @param options 可选。context: 上下文内容，用于上下文翻译模式
+   * @param options 可选。context: 上下文内容；enableContext: 启用上下文；processMode: 处理模式
    * @returns 翻译后的文本
    */
   translate(
     text: string,
     sourceLang: string,
     targetLang: string,
-    options?: { context?: string }
+    options?: { context?: string; enableContext?: boolean; processMode?: ProcessMode }
   ): Promise<string>;
 
   /**
