@@ -135,7 +135,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const newSet: PromptSet = {
       ...DEFAULT_PROMPT_SET,
       id: generateId(),
-      name: `新 Prompt 套装 ${(settings.promptSets?.length ?? 0) + 1}`,
+      name: `翻译指令 ${(settings.promptSets?.length ?? 0) + 1}`,
     };
     setSettings((prev) => ({
       ...prev,
@@ -158,10 +158,10 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const handleDeletePromptSet = (id: string) => {
     const sets = settings.promptSets || [];
     if (sets.length <= 1) {
-      alert('至少需要保留一套 Prompt');
+      alert('至少需要保留一套翻译指令模板');
       return;
     }
-    if (!window.confirm('确定要删除此 Prompt 套装吗？')) return;
+    if (!window.confirm('确定要删除此翻译指令模板吗？')) return;
     setSettings((prev) => ({
       ...prev,
       promptSets: prev.promptSets.filter((ps) => ps.id !== id),
@@ -249,9 +249,9 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         {/* 选项卡 */}
         <div className="flex border-b border-gray-200 dark:border-gray-700">
           {[
-            { id: 'api' as TabId, label: 'API 配置' },
-            { id: 'prompt-sets' as TabId, label: '通用 Prompt 管理' },
-            { id: 'custom-prompts' as TabId, label: '常用单次 Prompt 管理' },
+            { id: 'api' as TabId, label: 'API 服务' },
+            { id: 'prompt-sets' as TabId, label: '翻译指令模板' },
+            { id: 'custom-prompts' as TabId, label: '常用翻译要求' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -273,7 +273,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  每项包含：名称、类型（选择后自动填入默认 Base URL 和模型列表）、Base URL、API Key、模型列表。翻译时在界面选择一项配置 + 模型 + Prompt 套装。
+                  配置 AI 翻译服务的连接信息。选择类型后会自动填入默认地址和模型列表，填入 API Key 即可使用。
                 </p>
                 <button
                   onClick={handleAddApiConfig}
@@ -424,13 +424,13 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  每套包含：翻译 prompt、上下文 prompt、连贯模式 prompt。翻译时在界面选择使用哪套，与模型独立。
+                  自定义翻译时发给 AI 的指令，一般使用默认即可。可创建多套，翻译时选择使用哪一套。
                 </p>
                 <button
                   onClick={handleAddPromptSet}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm whitespace-nowrap"
                 >
-                  + 添加套装
+                  + 添加模板
                 </button>
               </div>
               <div className="space-y-6">
@@ -455,7 +455,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             return next;
                           });
                         }}
-                        placeholder="套装名称"
+                        placeholder="模板名称"
                         className="text-lg font-semibold text-gray-800 dark:text-gray-200 px-2 py-1 -mx-2 border border-transparent rounded hover:border-gray-300 focus:border-blue-500 focus:outline-none"
                       />
                       <button
@@ -468,9 +468,11 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     <div className="space-y-4">
                       <div>
                         <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
-                          翻译 Prompt
-                          <span className="ml-1 text-xs text-gray-500 font-normal">({'{content}'}、{'{sourceLang}'}、{'{targetLang}'}、{'{custom_prompt}'}、{'{context_prompt}'})</span>
+                          翻译指令
                         </label>
+                        <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                          翻译时发给 AI 的完整指令，一般不用改。
+                        </p>
                         <textarea
                           value={ps.prompt}
                           onChange={(e) => handleUpdatePromptSet(ps.id, { prompt: e.target.value })}
@@ -478,11 +480,17 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono
                             dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
                         />
+                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                          可用变量：{'{content}'}=字幕内容、{'{sourceLang}'}=源语言、{'{targetLang}'}=目标语言、{'{custom_prompt}'}=主页「额外翻译要求」、{'{context_prompt}'}=下方「上下文格式」渲染结果
+                        </p>
                       </div>
                       <div>
                         <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
-                          上下文 Prompt <span className="text-xs text-gray-500 font-normal">({'{context}'})</span>
+                          上下文格式
                         </label>
+                        <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                          开启「翻译上下文」时，前后文信息如何拼接。渲染后会替换上面翻译指令中的 {'{context_prompt}'}。
+                        </p>
                         <textarea
                           value={ps.contextPrompt ?? ''}
                           onChange={(e) => handleUpdatePromptSet(ps.id, { contextPrompt: e.target.value })}
@@ -490,25 +498,35 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono
                             dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
                         />
+                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                          可用变量：{'{context}'}=前后文内容
+                        </p>
                       </div>
                       <div>
                         <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
-                          连贯模式主 Prompt <span className="text-xs text-gray-500 font-normal">(选择「连贯模式」时，{'{content}'}、{'{custom_prompt}'}、{'{context_prompt}'}、{'{coherence_prompt}'})</span>
+                          连贯修正指令
+                          <span className="ml-1 text-xs text-gray-500 font-normal">(可选)</span>
                         </label>
+                        <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                          用于修正语音识别字幕的错误（不翻译），默认已预置，请勿随意清空。
+                        </p>
                         <textarea
                           value={ps.coherenceModePrompt ?? ''}
                           onChange={(e) => handleUpdatePromptSet(ps.id, { coherenceModePrompt: e.target.value })}
-                          rows={6}
+                          rows={4}
                           className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono
                             dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
                         />
+                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                          可用变量：{'{content}'}=字幕内容、{'{custom_prompt}'}=额外要求、{'{context_prompt}'}=上下文
+                        </p>
                       </div>
                     </div>
                   </div>
                 ))}
                 {(settings.promptSets || []).length === 0 && (
                   <div className="text-center py-12 text-gray-500 dark:text-gray-400 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg">
-                    暂无 Prompt 套装，点击上方「添加套装」创建
+                    暂无翻译指令模板，点击上方「添加模板」创建
                   </div>
                 )}
               </div>
@@ -518,11 +536,11 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           {activeTab === 'custom-prompts' && (
             <div>
               <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
-                设置常用的独立 prompt 模板，可在翻译时快速插入到当前文件的独立 prompt（{'{custom_prompt}'}）中。
+                保存常用的额外翻译要求，翻译时可一键插入到「额外翻译要求」中。
               </p>
               <div className="mb-6 p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900/50">
                 <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                  添加新的常用 prompt
+                  添加新的常用要求
                 </h4>
                 <div className="space-y-3">
                   <div>
@@ -583,7 +601,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 ))}
                 {(settings.customPrompts || []).length === 0 && (
                   <div className="text-sm text-gray-500 dark:text-gray-400 text-center py-8 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg">
-                    暂无常用 prompt，请添加
+                    暂无常用要求，请添加
                   </div>
                 )}
               </div>
