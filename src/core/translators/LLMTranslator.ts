@@ -16,6 +16,8 @@ export interface LLMTranslatorConfig {
   coherenceModePrompt?: string;
   /** 独立prompt（单次翻译专用），会替换主 prompt 中的 {custom_prompt} 占位符 */
   customPrompt?: string;
+  /** 翻译温度 (0-1)，数值越高翻译越自由创意 */
+  temperature?: number;
 }
 
 /**
@@ -113,7 +115,7 @@ export class LLMTranslator implements Translator {
             content: prompt,
           },
         ],
-        temperature: 0.3,
+        temperature: this.config.temperature ?? 0.3,
       }),
     });
 
@@ -143,7 +145,7 @@ export class LLMTranslator implements Translator {
             content: prompt,
           },
         ],
-        temperature: 0.3,
+        temperature: this.config.temperature ?? 0.3,
       }),
     });
 
@@ -177,6 +179,9 @@ export class LLMTranslator implements Translator {
             ],
           },
         ],
+        generationConfig: {
+          temperature: this.config.temperature ?? 0.3,
+        },
       }),
     });
 

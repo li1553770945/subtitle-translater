@@ -118,6 +118,8 @@ jobs:
   release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # main：正式 release；dev：pre-release（GitHub 预发布）
     if: |
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') &&

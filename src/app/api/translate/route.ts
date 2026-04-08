@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     const processModeRaw = formData.get('processMode') as string;
     const processMode: ProcessMode | undefined = processModeRaw === 'coherence' ? 'coherence' : (processModeRaw === 'translate' ? 'translate' : undefined);
     const multiLineBatchSize = Math.min(10, Math.max(2, parseInt(String(formData.get('multiLineBatchSize') || '3'), 10) || 3));
-    const contextLines = Math.min(3, Math.max(0, parseInt(String(formData.get('contextLines') || '0'), 10) || 0));
+    const contextLines = Math.min(10, Math.max(0, parseInt(String(formData.get('contextLines') || '0'), 10) || 0));
     const enableContext = formData.get('enableContext') === 'true';
     const parallelCountRaw = formData.get('parallelCount') as string;
     const parallelCount = parallelCountRaw ? Math.min(10, Math.max(2, parseInt(parallelCountRaw, 10) || 1)) : undefined;
@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
     const contextPrompt = (formData.get('contextPrompt') as string) || undefined;
     const coherenceModePrompt = (formData.get('coherenceModePrompt') as string) || undefined;
     const customPrompt = (formData.get('customPrompt') as string) || undefined;
+    const temperature = parseFloat(formData.get('temperature') as string) || 0.3;
+    const bilingual = formData.get('bilingual') === 'true';
 
     if (!file) {
       return NextResponse.json(
@@ -72,6 +74,7 @@ export async function POST(request: NextRequest) {
       contextPrompt,
       coherenceModePrompt,
       customPrompt,
+      temperature,
     });
 
     // 创建服务实例
@@ -115,6 +118,7 @@ export async function POST(request: NextRequest) {
 
           // 解析字幕文件
           const parsed = await service.parseSubtitle(content, filename);
+          const originalTexts = parsed.entries.map(e => e.text);
           const total = parsed.entries.length;
 
           // 发送初始进度
@@ -163,8 +167,19 @@ export async function POST(request: NextRequest) {
             return;
           }
 
+          // 双语字幕：合并原文与译文
+          const finalData = bilingual
+            ? {
+                ...translated,
+                entries: translated.entries.map((entry, i) => ({
+                  ...entry,
+                  text: `${originalTexts[i]}\n${entry.text}`,
+                })),
+              }
+            : translated;
+
           // 生成字幕文件
-          const translatedContent = service.generateSubtitle(translated, outputFormat);
+          const translatedContent = service.generateSubtitle(finalData, outputFormat);
 
           // 生成输出文件名
           const outputFilename = filename.replace(/\.[^.]+$/, `_translated.${outputFormat}`);

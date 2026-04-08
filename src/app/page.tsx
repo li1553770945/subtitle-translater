@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import SettingsModal from '@/components/SettingsModal';
 import {
   TranslationProvider,
   AppSettings,
   DEFAULT_SETTINGS,
   TranslationMode,
-  ProcessMode,
 } from '@/types/settings';
 import { loadSettings } from '@/utils/settings';
 import { SubtitleEntry } from '@/types/subtitle';
@@ -27,7 +26,6 @@ export default function Home() {
   const [multiLineBatchSize, setMultiLineBatchSize] = useState(3);
   const [contextLines, setContextLines] = useState(0);
   const [enableContext, setEnableContext] = useState(false);
-  const [processMode, setProcessMode] = useState<ProcessMode | undefined>(undefined);
   const [parallelCount, setParallelCount] = useState<number | undefined>(undefined);
   /** 选中的 API 配置 id（翻译时用该配置的 type、apiKey、baseUrl、models） */
   const [selectedApiConfigId, setSelectedApiConfigId] = useState<string>('');
@@ -50,6 +48,12 @@ export default function Home() {
   const [customPrompt, setCustomPrompt] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [temperature, setTemperature] = useState(0.3);
+  const [bilingual, setBilingual] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const [firstSubtitleText, setFirstSubtitleText] = useState('');
 
   // 加载设置
   useEffect(() => {
@@ -75,6 +79,27 @@ export default function Home() {
     ? apiConfigs.find((c) => c.id === selectedApiConfigId)
     : enabledConfigs[0];
   const availableModels = selectedConfig?.models ?? [];
+
+  const promptPreviewText = useMemo(() => {
+    const promptSet = (appSettings.promptSets || []).find(ps => ps.id === promptSetId);
+    if (!promptSet) return '';
+
+    const sampleContent = firstSubtitleText || 'Hello, how are you today?';
+    const customPromptResolved = customPrompt.trim();
+
+    let contextPromptResolved = '';
+    if (enableContext && contextLines > 0 && promptSet.contextPrompt) {
+      const sampleContext = '上文：\n(示例：前一句字幕)\n\n下文：\n(示例：后一句字幕)';
+      contextPromptResolved = promptSet.contextPrompt.replace('{context}', sampleContext);
+    }
+
+    return promptSet.prompt
+      .replace(/\{custom_prompt\}/g, customPromptResolved)
+      .replace(/\{context_prompt\}/g, contextPromptResolved)
+      .replace(/\{content\}/g, sampleContent)
+      .replace(/\{sourceLang\}/g, sourceLang)
+      .replace(/\{targetLang\}/g, targetLang);
+  }, [appSettings.promptSets, promptSetId, customPrompt, enableContext, contextLines, sourceLang, targetLang, firstSubtitleText]);
 
   // 初始化：选择第一个已配置的 API 配置、模型和 Prompt 套装（仅随设置加载时同步一次）
   useEffect(() => {
@@ -116,12 +141,54 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!file) {
+      setFirstSubtitleText('');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = (e.target?.result as string || '').replace(/^\uFEFF/, '');
+      const blocks = content.split(/\n\s*\n/).filter(b => b.trim());
+      for (const block of blocks) {
+        const lines = block.trim().split('\n');
+        if (lines.length >= 3 && /^\d+$/.test(lines[0].trim()) && lines[1].includes('-->')) {
+          setFirstSubtitleText(lines.slice(2).join('\n').trim());
+          return;
+        }
+      }
+    };
+    reader.readAsText(file);
+  }, [file]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
       setResult(null);
       setError(null);
-      // 切换文件时不清空独立prompt，允许用户保留设置
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files[0];
+    if (droppedFile && droppedFile.name.toLowerCase().endsWith('.srt')) {
+      setFile(droppedFile);
+      setResult(null);
+      setError(null);
+    } else {
+      setError('目前仅支持 .srt 格式的字幕文件');
     }
   };
 
@@ -169,7 +236,7 @@ export default function Home() {
     try {
       const promptSet = (appSettings.promptSets || []).find((ps) => ps.id === promptSetId);
       if (!promptSet) {
-        setError('请选择 Prompt 套装');
+        setError('请选择翻译指令模板');
         setLoading(false);
         return;
       }
@@ -183,9 +250,6 @@ export default function Home() {
       formData.append('multiLineBatchSize', String(multiLineBatchSize));
       formData.append('contextLines', String(contextLines));
       formData.append('enableContext', String(enableContext));
-      if (processMode) {
-        formData.append('processMode', processMode);
-      }
       if (parallelCount !== undefined) {
         formData.append('parallelCount', String(parallelCount));
       }
@@ -199,6 +263,8 @@ export default function Home() {
       formData.append('contextPrompt', promptSet.contextPrompt ?? '');
       formData.append('coherenceModePrompt', promptSet.coherenceModePrompt ?? '');
       formData.append('customPrompt', customPrompt.trim());
+      formData.append('temperature', String(temperature));
+      formData.append('bilingual', String(bilingual));
 
       const response = await fetch('/api/translate', {
         method: 'POST',
@@ -454,29 +520,47 @@ export default function Home() {
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 space-y-6">
-          {/* 文件上传 */}
+          {/* 文件上传（拖拽区域） */}
           <div>
             <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
               选择字幕文件
             </label>
-            <input
-              type="file"
-              accept=".srt,.ass,.vtt"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500 dark:text-gray-400
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-full file:border-0
-                file:text-sm file:font-semibold
-                file:bg-blue-50 file:text-blue-700
-                hover:file:bg-blue-100
-                dark:file:bg-blue-900 dark:file:text-blue-300
-                dark:hover:file:bg-blue-800"
-            />
-            {file && (
-              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                已选择: {file.name}
-              </p>
-            )}
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all duration-200 ${
+                isDragging
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                  : file
+                  ? 'border-green-300 dark:border-green-700 bg-green-50/50 dark:bg-green-900/10'
+                  : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".srt"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              {isDragging ? (
+                <div className="text-blue-600 dark:text-blue-400">
+                  <p className="text-lg font-medium">释放以选择文件</p>
+                </div>
+              ) : file ? (
+                <div className="text-green-700 dark:text-green-400">
+                  <p className="text-sm font-medium">{file.name}</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">点击更换文件</p>
+                </div>
+              ) : (
+                <div className="text-gray-500 dark:text-gray-400">
+                  <p className="text-sm">点击选择或拖放字幕文件到此处</p>
+                  <p className="mt-1 text-xs">支持 .srt 格式</p>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* 翻译服务与 Prompt 选择 */}
@@ -530,7 +614,7 @@ export default function Home() {
             </div>
             <div>
               <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-                Prompt 套装
+                翻译指令
               </label>
               <select
                 value={promptSetId}
@@ -545,12 +629,9 @@ export default function Home() {
                   </option>
                 ))}
                 {(appSettings.promptSets || []).length === 0 && (
-                  <option value="">请先在设置中添加 Prompt 套装</option>
+                  <option value="">请先在设置中添加翻译指令模板</option>
                 )}
               </select>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                在设置中可添加多套，与模型独立选择
-              </p>
             </div>
           </div>
 
@@ -712,7 +793,7 @@ export default function Home() {
                 </div>
 
                 {/* 翻译上下文开关 */}
-                {contextLines > 0 && processMode=="translate" && (
+                {contextLines > 0 && (
                   <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900/50">
                     <label className="flex items-start gap-3 cursor-pointer">
                       <input
@@ -733,100 +814,83 @@ export default function Home() {
                     </label>
                   </div>
                 )}
-                
-                {/* 处理模式选择 */}
-                <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20">
-                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-                    处理模式
-                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
-                      (选择处理方式)
-                    </span>
-                  </label>
-                  <div className="space-y-2">
-                    <label className="flex items-start gap-3 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="processMode"
-                        value="translate"
-                        checked={processMode === undefined || processMode === 'translate'}
-                        onChange={() => {
-                          setProcessMode('translate');
-                        }}
-                        className="mt-1 w-4 h-4"
-                      />
-                      <div className="flex-1">
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                          翻译模式（默认）
-                        </span>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                          将源语言翻译成目标语言，保持原意。
-                        </p>
-                      </div>
-                    </label>
-                    <label className="flex items-start gap-3 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="processMode"
-                        value="coherence"
-                        checked={processMode === 'coherence'}
-                        onChange={() => {
-                          setProcessMode('coherence');
-                          // 启用连贯模式时，如果上下文为0，自动设置为1
-                          if (contextLines === 0) {
-                            setContextLines(1);
-                          }
-                        }}
-                        className="mt-1 w-4 h-4"
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            连贯模式（剧情脑补）
-                          </span>
-                          <span className="text-xs px-2 py-0.5 bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200 rounded">
-                            实验性
-                          </span>
-                        </div>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                          只修正当前句：通顺、逻辑合理、标点正确，可合理推测并修正明显识别错误。只输出修正后的台词，不添加括号内的动作/神态等原句没有的内容，不无中生有。
-                          {processMode === 'coherence' && contextLines === 0 && (
-                            <span className="block mt-1 text-yellow-700 dark:text-yellow-300 font-medium">
-                              ⚠️ 已自动启用上下文（1行）以支持连贯模式
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-                </div>
               </>
             )}
           </div>
 
-          {/* 输出格式 */}
+          {/* 翻译创意度 */}
           <div>
             <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-              输出格式
+              翻译创意度
+              <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
+                (控制翻译的自由度)
+              </span>
             </label>
-            <select
-              value={outputFormat}
-              onChange={(e) => setOutputFormat(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
-                focus:outline-none focus:ring-blue-500 focus:border-blue-500
-                dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
-            >
-              <option value="srt">SRT</option>
-              <option value="ass">ASS</option>
-              <option value="vtt">VTT</option>
-            </select>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-500 dark:text-gray-400 w-6 text-right shrink-0">精确</span>
+              <input
+                type="range"
+                min={0}
+                max={10}
+                value={Math.round(temperature * 10)}
+                onChange={(e) => setTemperature(parseInt(e.target.value, 10) / 10)}
+                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                  bg-gray-200 dark:bg-gray-600 accent-blue-600"
+              />
+              <span className="text-xs text-gray-500 dark:text-gray-400 w-6 shrink-0">创意</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 w-8 shrink-0">
+                {temperature.toFixed(1)}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {temperature <= 0.2 ? '严格遵循原文含义，适合技术文档、法律文件等专业内容' :
+               temperature <= 0.4 ? '忠实原文，适度润色，推荐用于大多数字幕翻译场景' :
+               temperature <= 0.6 ? '注重自然流畅，适合影视对话、日常文本' :
+               temperature <= 0.8 ? '自由意译，追求表达效果，适合文学、创意内容' :
+               '大胆创意发挥，可能明显偏离原意'}
+            </p>
           </div>
 
-          {/* 独立prompt设置 */}
+          {/* 输出格式与双语选项 */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                输出格式
+              </label>
+              <select
+                value={outputFormat}
+                onChange={(e) => setOutputFormat(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
+                  focus:outline-none focus:ring-blue-500 focus:border-blue-500
+                  dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300"
+              >
+                <option value="srt">SRT</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                附加选项
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md
+                hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={bilingual}
+                  onChange={(e) => setBilingual(e.target.checked)}
+                  className="w-4 h-4 accent-blue-600"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">双语字幕</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">(保留原文 + 译文)</span>
+              </label>
+            </div>
+          </div>
+
+          {/* 额外翻译要求 */}
           <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20">
             <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-              独立prompt（单次翻译专用）
+              额外翻译要求
               <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
-                (可选，用于为当前字幕文件设置特殊的翻译背景或要求)
+                (可选，仅本次翻译有效)
               </span>
             </label>
             <div className="mb-2">
@@ -851,22 +915,47 @@ export default function Home() {
             <textarea
               value={customPrompt}
               onChange={(e) => setCustomPrompt(e.target.value)}
-              rows={4}
-              placeholder="例如：这是一个技术文档，请使用专业术语...&#10;或者：这是对话场景，请保持口语化..."
+              rows={3}
+              placeholder="例如：这是一部科幻电影，角色有「艾伦」和「三笠」，请保持这些译名一致&#10;又如：这是技术教程，请使用专业术语而非口语化表达"
               className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm
                 focus:outline-none focus:ring-blue-500 focus:border-blue-500
                 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300
                 font-mono text-sm"
             />
-            <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-              <p>提示：</p>
-              <ul className="list-disc list-inside ml-2 space-y-0.5">
-                <li>此prompt仅对当前翻译任务有效，不会保存到全局设置</li>
-                <li>如果主prompt中包含 {'{custom_prompt}'} 占位符，此内容会替换该占位符</li>
-                <li>如果未设置独立prompt，{'{custom_prompt}'} 占位符会被替换为空字符串</li>
-                <li>点击上方按钮可快速插入常用prompt模板</li>
-              </ul>
-            </div>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              此内容会替换翻译指令模板中的 {'{custom_prompt}'} 变量。默认模板已包含该变量，自定义模板需手动添加才能生效。常用的要求可在设置中保存为模板。
+            </p>
+          </div>
+
+          {/* 指令预览 */}
+          <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <button
+              onClick={() => setShowPromptPreview(!showPromptPreview)}
+              className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium
+                text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <svg className={`w-3.5 h-3.5 transition-transform ${showPromptPreview ? 'rotate-90' : ''}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+                预览最终指令
+              </span>
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                {firstSubtitleText ? '使用文件首句' : '使用示例文本'}
+              </span>
+            </button>
+            {showPromptPreview && (
+              <div className="px-4 pb-4 border-t border-gray-200 dark:border-gray-700">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-3 mb-2">
+                  以下是根据当前所有设置渲染后，实际发送给 AI 的完整指令：
+                </p>
+                <pre className="whitespace-pre-wrap break-words text-sm font-mono leading-relaxed
+                  bg-gray-50 dark:bg-gray-800 rounded-md p-3 text-gray-800 dark:text-gray-200
+                  max-h-80 overflow-y-auto border border-gray-100 dark:border-gray-700"
+                >{promptPreviewText || '（请先在设置中添加翻译指令模板）'}</pre>
+              </div>
+            )}
           </div>
 
           {/* 进度条 */}
@@ -922,10 +1011,9 @@ export default function Home() {
                   {isCancelled && <span className="ml-2 text-xs text-yellow-600 dark:text-yellow-400">(已终止)</span>}
                 </h3>
               </div>
-              <div className="max-h-64 overflow-y-auto space-y-2">
+              <div className="max-h-96 overflow-y-auto space-y-2">
                 {[...previewEntries]
-                  .sort((a, b) => a.index - b.index) // 按索引排序，确保顺序正确
-                  .slice(0, 20) // 显示前20条，而不是最后10条，这样可以看到翻译进度
+                  .sort((a, b) => a.index - b.index)
                   .map((entry, idx) => {
                     const isPlaceholder = entry.text === '[翻译中...]';
                     return (
@@ -955,11 +1043,6 @@ export default function Home() {
                       </div>
                     );
                   })}
-                {previewEntries.length > 20 && (
-                  <div className="text-xs text-gray-500 dark:text-gray-400 text-center py-2">
-                    显示前 20 条，共 {previewEntries.length} 条
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -1041,7 +1124,7 @@ export default function Home() {
 
         {/* 说明 */}
         <div className="mt-8 text-center text-sm text-gray-600 dark:text-gray-400">
-          <p>支持 SRT、ASS、VTT 格式的字幕文件</p>
+          <p>支持 SRT 格式的字幕文件</p>
           <p className="mt-2">点击右上角设置图标配置翻译服务</p>
         </div>
       </div>
